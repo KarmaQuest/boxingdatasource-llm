@@ -7,6 +7,10 @@
         Demande au LLM si deux mentions désignent le même boxeur.
     python main.py report --annuaire ../boxing-app/public/data/boxers/merged.json
         Détecte les paires de noms à similarité ambigüe dans un annuaire.
+    python main.py batch --source wbc --year 2026 --output batch.json
+        Extrait les combats de TOUS les articles d'une source (LLM).
+    python main.py resolve-batch --annuaire merged.json --max-pairs 20
+        Tranche les paires suspectes d'un annuaire (LLM).
 
 Sans GEMINI_API_KEY, les commandes LLM échouent proprement (message clair) ;
 `report` fonctionne sans LLM (il liste les paires suspectes à trancher).
@@ -104,6 +108,62 @@ def cmd_batch(args) -> int:
     return 0
 
 
+def cmd_resolve_batch(args) -> int:
+    from llm.client import get_default_client
+    from llm.resolve_batch import run_resolve_batch, save_report
+
+    client = get_default_client()
+    if not client.available:
+        print("❌ GEMINI_API_KEY absente — le LLM est inactif.")
+        return 1
+
+    def progress(i, total, name_a, name_b):
+        print(f"   [{i}/{total}] {name_a!r} vs {name_b!r}")
+
+    report = run_resolve_batch(
+        client, args.annuaire, max_pairs=args.max_pairs, progress=progress,
+    )
+    print(f"\n{report['paires_suspectes']} paires suspectes détectées — "
+          f"{report['paires_analysees']} analysées")
+    print(f"✅ {len(report['fusions'])} fusions recommandées (confiance ≥ 0.9) :")
+    for f in report["fusions"]:
+        print(f"   {f['name_a']!r} = {f['name_b']!r} "
+              f"(confiance {f['confidence']:.2f})")
+    print(f"➖ {len(report['distinctes'])} paires distinctes confirmées")
+    print(f"❓ {len(report['inconclusives'])} inconclusives "
+          f"(confiance < 0.9)")
+    if report["errors"]:
+        print(f"⚠️ {len(report['errors'])} erreurs :")
+        for e in report["errors"][:5]:
+            print(f"   {e[:110]}")
+    if args.output:
+        save_report(report, args.output)
+        print(f"\n✍️  {args.output}")
+    return 0
+
+
+def cmd_integrate(args) -> int:
+    from llm.integrate import fights_to_pipeline_format
+
+    batch = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    fights = fights_to_pipeline_format(batch, source=args.source,
+                                       default_date=args.date)
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(fights, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+    print(f"✅ {len(fights)} combats au format pipeline (source {args.source})")
+    for f in fights[:10]:
+        print(f"   {f['date']} {f['fighter_a']} bat {f['fighter_b']} "
+              f"({f['method']} r{f['rounds'] or '?'})")
+    if len(fights) > 10:
+        print(f"   … et {len(fights) - 10} autres")
+    if args.output:
+        print(f"\n✍️  {args.output}")
+    return 0
+
+
 def cmd_report(args) -> int:
     from llm.resolve import suspicious_pairs
 
@@ -155,6 +215,20 @@ def main() -> int:
     p.add_argument("--max-articles", type=int, default=50)
     p.add_argument("--output", default="", help="chemin JSON de sortie")
     p.set_defaults(func=cmd_batch)
+
+    p = sub.add_parser("resolve-batch", help="tranche les paires suspectes d'un annuaire (LLM)")
+    p.add_argument("--annuaire", required=True, help="chemin vers merged.json")
+    p.add_argument("--max-pairs", type=int, default=20,
+                   help="nombre max de paires analysées (défaut 20)")
+    p.add_argument("--output", default="", help="chemin JSON du rapport")
+    p.set_defaults(func=cmd_resolve_batch)
+
+    p = sub.add_parser("integrate", help="convertit un batch LLM au format pipeline (Fight)")
+    p.add_argument("--input", required=True, help="JSON du batch (run_batch)")
+    p.add_argument("--source", required=True, choices=["wbc", "wbo"])
+    p.add_argument("--date", default="", help="date par défaut si absente")
+    p.add_argument("--output", default="", help="chemin JSON de sortie")
+    p.set_defaults(func=cmd_integrate)
 
     p = sub.add_parser("report", help="paires suspectes dans un annuaire (sans LLM)")
     p.add_argument("--annuaire", required=True, help="chemin vers merged.json")
