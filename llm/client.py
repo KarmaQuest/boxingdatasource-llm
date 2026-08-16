@@ -38,10 +38,12 @@ ENV_CANDIDATES = (
 )
 
 # ⚠️ gemini-2.5-flash / 2.0-flash renvoient 404 pour les nouveaux comptes
-# (16/08/2026) : « no longer available to new users ». L'alias
-# gemini-flash-latest est résolu par Google vers le modèle courant
-# (actuellement gemini-3.7-flash) — c'est lui qu'on utilise.
-GEMINI_MODEL = "gemini-flash-latest"
+# (16/08/2026) : « no longer available to new users ».
+#
+# Modèle par défaut : gemini-flash-lite-latest — le SEUL qui répond sans
+# 429 sur ce compte free tier (gemini-flash-latest → 3.7-flash est saturé
+# « high demand » en permanence, 429 même après 90 s d'attente).
+GEMINI_MODEL = "gemini-flash-lite-latest"
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -101,7 +103,7 @@ class LLMClient:
         url = f"{GEMINI_ENDPOINT}?key={urllib.parse.quote(self._key)}"
 
         import time as _time
-        for attempt in range(1, 4):  # 3 tentatives max
+        for attempt in range(1, 5):  # 4 tentatives max
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
@@ -113,8 +115,9 @@ class LLMClient:
                     data = json.loads(resp.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
-                if exc.code in (429, 503) and attempt < 3:
-                    _time.sleep(3.0 * attempt)  # backoff : 3 s, 6 s
+                # 429 = rate-limit free tier (~15 req/min) → backoff long
+                if exc.code in (429, 503) and attempt < 4:
+                    _time.sleep(8.0 * attempt)  # backoff : 8, 16, 24 s
                     continue
                 raise LLMError(f"appel Gemini échoué : {exc}") from exc
             except (OSError, TimeoutError) as exc:
