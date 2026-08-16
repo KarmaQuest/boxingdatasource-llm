@@ -60,7 +60,12 @@ def build_prompt(text: str, date: str, source: str = "wbc") -> str:
 
 def _clean_value(value: object) -> str:
     s = str(value or "").strip()
-    return re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    # un nom ne contient jamais de parenthèse (ex. « (Lauriaga » tronqué
+    # par le LLM) → on retire le contenu entre parenthèses non fermées
+    if s.count("(") > s.count(")"):
+        s = re.sub(r"\s*\([^)]*$", "", s).strip()
+    return s
 
 
 def _validate_fight(raw: dict) -> Optional[dict]:
@@ -98,15 +103,47 @@ def _validate_fight(raw: dict) -> Optional[dict]:
     }
 
 
+def _first_json_object(text: str) -> Optional[str]:
+    """Extrait le PREMIER objet JSON équilibré de la réponse (robuste).
+
+    Gère les réponses bavardes (« Voici le JSON : {...} »), les fences
+    markdown (```json … ```) et les accolades dans les chaînes (ex.
+    un surnom entre accolades). Échoue proprement si aucun objet."""
+    in_string = False
+    escape = False
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                return text[start:i + 1]
+    return None
+
+
 def parse_llm_json(text: str) -> list[dict]:
     """Parse la réponse LLM : extrait `{"fights": [...]}` (JSON strict)."""
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
+    obj = _first_json_object(text)
+    if obj is None:
         raise LLMError(f"pas d'objet JSON dans la réponse LLM : {text[:200]}")
     try:
-        data = json.loads(m.group(0))
+        data = json.loads(obj)
     except json.JSONDecodeError as exc:
-        raise LLMError(f"JSON LLM invalide : {exc}") from exc
+        raise LLMError(f"JSON LLM invalide : {exc} — réponse : {text[:200]}") from exc
     fights = data.get("fights", []) if isinstance(data, dict) else []
     if not isinstance(fights, list):
         raise LLMError("le champ « fights » doit être une liste")

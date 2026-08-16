@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from llm.client import LLMClient, LLMError  # noqa: E402
 from llm.extract import (  # noqa: E402
+    _first_json_object,
     build_prompt,
     extract_fights_llm,
     parse_llm_json,
@@ -90,6 +91,13 @@ class TestValidateFight(unittest.TestCase):
         })
         self.assertEqual(f["rounds"], 0)
 
+    def test_parenthèse_non_fermee_retiree_du_nom(self):
+        f = _validate_fight({
+            "winner": "John Vincent Moriana (Lauriaga", "loser": "B",
+            "method": "PTS", "rounds": 0,
+        })
+        self.assertEqual(f["winner"], "John Vincent Moriana")
+
 
 class TestParseLlmJson(unittest.TestCase):
     def test_parse_json_avec_fences_markdown(self):
@@ -108,6 +116,18 @@ class TestParseLlmJson(unittest.TestCase):
     def test_json_invalide_leve_erreur(self):
         with self.assertRaises(LLMError):
             parse_llm_json('{"fights": [}')
+
+    def test_reponse_bavarde_deux_objets(self):
+        # le modèle répond du texte + le JSON + du texte
+        fights = parse_llm_json(
+            'Voici le résultat : ' + GOOD_JSON + ' Fin du rapport.'
+        )
+        self.assertEqual(len(fights), 2)
+
+    def test_accolades_dans_les_chaines(self):
+        # un surnom avec accolade ne casse pas l'extraction
+        obj = _first_json_object('{"name": "Bob {le} rouge", "x": 1}')
+        self.assertEqual(obj, '{"name": "Bob {le} rouge", "x": 1}')
 
 
 class TestExtractFightsLlm(unittest.TestCase):

@@ -69,6 +69,41 @@ def cmd_resolve(args) -> int:
     return 0
 
 
+def cmd_batch(args) -> int:
+    from llm.batch import run_batch, save_results
+    from llm.client import get_default_client
+
+    client = get_default_client()
+    if not client.available:
+        print("❌ GEMINI_API_KEY absente — le LLM est inactif.")
+        return 1
+
+    def progress(i, total, title):
+        print(f"   [{i}/{total}] {title[:60]}")
+
+    print(f"Batch {args.source} (max {args.max_articles} articles)…")
+    results = run_batch(
+        client, args.source, year=args.year,
+        max_articles=args.max_articles, progress=progress,
+    )
+    print(f"\n✅ {results['articles_ok']}/{results['articles']} articles "
+          f"parsés — {results['total_fights']} combats extraits par le LLM")
+    for title, date, fights in [
+        (c["title"], c["date"], c["fights"]) for c in results["combats"]
+    ]:
+        for f in fights:
+            print(f"   {date} {f['winner']} bat {f['loser']} "
+                  f"({f['method'] or '?'} r{f['rounds'] or '?'})")
+    if results["errors"]:
+        print(f"\n⚠️ {len(results['errors'])} articles en échec :")
+        for e in results["errors"][:5]:
+            print(f"   {e[:100]}")
+    if args.output:
+        save_results(results, args.output)
+        print(f"\n✍️  {args.output}")
+    return 0
+
+
 def cmd_report(args) -> int:
     from llm.resolve import suspicious_pairs
 
@@ -113,6 +148,13 @@ def main() -> int:
     p.add_argument("--name-b", required=True)
     p.add_argument("--ctx-b", default="")
     p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("batch", help="extrait les combats de tous les articles d'une source (LLM)")
+    p.add_argument("--source", required=True, choices=["wbc", "wbo"])
+    p.add_argument("--year", type=int, default=2026)
+    p.add_argument("--max-articles", type=int, default=50)
+    p.add_argument("--output", default="", help="chemin JSON de sortie")
+    p.set_defaults(func=cmd_batch)
 
     p = sub.add_parser("report", help="paires suspectes dans un annuaire (sans LLM)")
     p.add_argument("--annuaire", required=True, help="chemin vers merged.json")
