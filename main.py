@@ -69,6 +69,28 @@ def cmd_resolve(args) -> int:
     return 0
 
 
+def cmd_integrate(args) -> int:
+    from llm.integrate import fights_to_pipeline_format
+
+    batch = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    fights = fights_to_pipeline_format(batch, source=args.source,
+                                       default_date=args.date)
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(fights, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+    print(f"✅ {len(fights)} combats au format pipeline (source {args.source})")
+    for f in fights[:10]:
+        print(f"   {f['date']} {f['fighter_a']} bat {f['fighter_b']} "
+              f"({f['method']} r{f['rounds'] or '?'})")
+    if len(fights) > 10:
+        print(f"   … et {len(fights) - 10} autres")
+    if args.output:
+        print(f"\n✍️  {args.output}")
+    return 0
+
+
 def cmd_report(args) -> int:
     from llm.resolve import suspicious_pairs
 
@@ -113,6 +135,13 @@ def main() -> int:
     p.add_argument("--name-b", required=True)
     p.add_argument("--ctx-b", default="")
     p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("integrate", help="convertit un batch LLM au format pipeline (Fight)")
+    p.add_argument("--input", required=True, help="JSON du batch (run_batch)")
+    p.add_argument("--source", required=True, choices=["wbc", "wbo"])
+    p.add_argument("--date", default="", help="date par défaut si absente")
+    p.add_argument("--output", default="", help="chemin JSON de sortie")
+    p.set_defaults(func=cmd_integrate)
 
     p = sub.add_parser("report", help="paires suspectes dans un annuaire (sans LLM)")
     p.add_argument("--annuaire", required=True, help="chemin vers merged.json")
