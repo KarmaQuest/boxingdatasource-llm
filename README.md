@@ -39,11 +39,24 @@ de vérité. Tout résultat généré est :
 # Extraction prose : articles WBC/WBO → combats valides
 python main.py extract --source wbc --date 2026-08-12 --text "..."
 
-# Recoupement : noms ambigus entre Wikidata / Big Balls / combats des orgs
-python main.py resolve --name "O. Usyk" --candidates "Oleksandr Usyk" "Olexandr Usyk"
+# Recoupement : deux mentions désignent-elles le même boxeur ?
+python main.py resolve --name-a "O. Usyk" --ctx-a "IBF, poids lourds" \
+                       --name-b "Oleksandr Usyk" --ctx-b "Ukraine, né 1987"
 
-# Rapport complet de recoupement sur les shards du pipeline
+# Paires suspectes dans un annuaire (sans LLM) — à faire trancher ensuite
 python main.py report --annuaire ../boxing-app/public/data/boxers/merged.json
+
+# BATCH : extrait les combats de TOUS les articles d'une source (WBC/WBO)
+python main.py batch --source wbc --year 2026 --output batch-wbc.json
+
+# BATCH : tranche les paires suspectes de l'annuaire (LLM, paire par paire)
+python main.py resolve-batch --annuaire ../boxing-app/public/data/boxers/merged.json \
+                             --max-pairs 20 --output resolve-report.json
+
+# INTÉGRATION : convertit un batch au format Fight du pipeline (écriture
+# par write_org_shard)
+python main.py integrate --input batch-wbc.json --source wbc \
+                         --output ../boxing-app/public/data/llm/fights-wbc.json
 ```
 
 ## Tests
