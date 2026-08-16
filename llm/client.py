@@ -24,12 +24,19 @@ Usage :
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+# Journalisation des appels (jamais la clé ni le prompt complet).
+logger = logging.getLogger("llm.client")
+
+# Nombre d'échecs 429 CONSECUTIFS qui déclenche une alerte « quota atteint ».
+ALERT_429_THRESHOLD = 3
 
 # Clé partagée : $GEMINI_API_KEY > boxing-app/.env.local > .env pipeline
 ENV_CANDIDATES = (
@@ -77,6 +84,7 @@ class LLMClient:
     def __init__(self, key: Optional[str] = None) -> None:
         self._key = (key if key is not None else api_key()).strip()
         self.timeout = 60.0
+        self._consecutive_429 = 0
 
     @property
     def available(self) -> bool:
@@ -103,6 +111,7 @@ class LLMClient:
         url = f"{GEMINI_ENDPOINT}?key={urllib.parse.quote(self._key)}"
 
         import time as _time
+        start = _time.time()
         for attempt in range(1, 5):  # 4 tentatives max
             req = urllib.request.Request(
                 url,
@@ -113,14 +122,38 @@ class LLMClient:
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+                self._consecutive_429 = 0
+                logger.info(
+                    "gemini ok : model=%s latency=%.2fs",
+                    GEMINI_MODEL, _time.time() - start,
+                )
                 break
             except urllib.error.HTTPError as exc:
                 # 429 = rate-limit free tier (~15 req/min) → backoff long
                 if exc.code in (429, 503) and attempt < 4:
+                    if exc.code == 429:
+                        self._consecutive_429 += 1
+                        if self._consecutive_429 >= ALERT_429_THRESHOLD:
+                            logger.warning(
+                                "quota free tier atteint : %d x 429 consécutifs",
+                                self._consecutive_429,
+                            )
+                    logger.warning(
+                        "gemini retry : attempt=%d status=%s backoff=%ds",
+                        attempt, exc.code, 8.0 * attempt,
+                    )
                     _time.sleep(8.0 * attempt)  # backoff : 8, 16, 24 s
                     continue
+                # Échec terminal : on conserve un 429 (quota), on réinitialise
+                # sinon (erreur sans lien avec le quota).
+                if exc.code == 429:
+                    self._consecutive_429 += 1
+                else:
+                    self._consecutive_429 = 0
+                logger.error("gemini error : status=%s", exc.code)
                 raise LLMError(f"appel Gemini échoué : {exc}") from exc
             except (OSError, TimeoutError) as exc:
+                logger.error("gemini error : %s", type(exc).__name__)
                 raise LLMError(f"appel Gemini échoué : {exc}") from exc
 
         try:

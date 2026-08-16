@@ -15,8 +15,9 @@ Validation locale (miroir du schéma pipeline, sans importer le repo) :
 Un combat qui ne passe pas est rejeté avec un warning — jamais écrit.
 
 Usage :
-    from llm.integrate import fights_to_pipeline_format
+    from llm.integrate import fights_to_pipeline_format, merge_fights
     dicts = fights_to_pipeline_format(results, source="wbc", date="2026-08-12")
+    shard, added = merge_fights(spider_fights, dicts)  # → write_org_shard
 """
 
 from __future__ import annotations
@@ -110,3 +111,54 @@ def fights_to_pipeline_format(
             if converted:
                 out.append(converted)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Fusion des combats LLM dans un shard existant
+# ---------------------------------------------------------------------------
+
+def _name_key(name: object) -> str:
+    """Nom réduit pour la dédup : guillemets, parenthèse non fermée
+    tronquée, ponctuation finale et casse ignorés."""
+    s = _norm(name)
+    s = re.sub(r"[\"\u201c\u201d']", "", s)
+    s = re.sub(r"\s*\([^)]*$", "", s).strip()  # « Moriana (Lauriaga » → « Moriana »
+    s = re.sub(r"\.$", "", s.strip())           # « Lamont Roach Jr. » vs « …Jr »
+    s = re.sub(r"[^a-z0-9 ]+", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def merge_key(fight: dict) -> tuple:
+    """Clé de dédup d'un combat (format Fight) : (date, {A, B} normalisés).
+
+    ⚠️ L'id SHA-256 ne suffit pas : le même combat vu par deux sources a des
+    ids différents (méthode PTS vs UD, weight_class, nom tronqué…). La paire
+    de boxeurs + date est la bonne granularité pour fusionner des combats
+    issus du LLM dans un shard déjà peuplé par le spider.
+    """
+    return (
+        _norm(fight.get("date")),
+        frozenset((_name_key(fight.get("fighter_a")), _name_key(fight.get("fighter_b")))),
+    )
+
+
+def merge_fights(shard_fights: list[dict], new_fights: list[dict]) -> tuple:
+    """Fusionne des combats LLM dans un shard existant (liste non triée).
+
+    - les combats déjà présents dans `shard_fights` GAGNENT (source
+      déterministe prioritaire) ; un combat LLM doublon est ignoré ;
+    - seuls les combats réellement nouveaux sont ajoutés ;
+    - le résultat est trié par date décroissante (ordre de write_org_shard).
+
+    Retourne `(liste_fusionnée, nb_ajoutés)` — prêt pour `write_org_shard`.
+    """
+    by_key = {merge_key(f): f for f in shard_fights}
+    added = 0
+    for fight in new_fights:
+        key = merge_key(fight)
+        if key not in by_key:
+            by_key[key] = fight
+            added += 1
+    merged = list(by_key.values())
+    merged.sort(key=lambda f: _norm(f.get("date")), reverse=True)
+    return merged, added

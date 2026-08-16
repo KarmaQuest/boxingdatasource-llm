@@ -2,7 +2,7 @@
 
 > **Fichier de contexte du module LLM.** Tout ce qui a été mis en place,
 > pour reprendre le travail sans rien perdre. Dernière mise à jour :
-> 16/08/2026.
+> 17/08/2026.
 
 ## 1. Vue d'ensemble & mission
 
@@ -36,7 +36,7 @@ vérité. Tout résultat généré est :
 | Module LLM (projet Python) | `/boxingdatasource-llm` (racine workspace, séparé du pipeline) |
 | Pipeline (projet Python) | `/boxingdatasource-pipeline` |
 | App Next.js | `/boxing-app` |
-| Shards de résultats | `boxing-app/public/data/fights/` (générés par le pipeline) |
+| Shards de résultats | `boxing-app/public/data/fights/` (générés par le pipeline) — `wbc.json` = **7 combats** (6 spider + Ibrahim Mafia, LLM validé le 17/08/2026) |
 | Annuaire fusionné (Wikidata+BigBalls+orgs) | `boxing-app/public/data/boxers/merged.json` (généré par `annuaire/resolve.py` du pipeline — **20 894 fiches** le 16/08/2026) |
 | Sortie du batch LLM | `boxing-app/public/data/llm/fights-wbc.json` (5 combats WBC au format pipeline, extraits le 16/08/2026) |
 
@@ -50,19 +50,22 @@ statiques (zéro requête runtime).
 boxingdatasource-llm/
 ├── main.py                  # CLI : extract / resolve / batch / resolve-batch / integrate / report
 ├── llm/
-│   ├── client.py            # client Gemini free tier (REST urllib pur, température 0, retries)
+│   ├── client.py            # client Gemini free tier (REST urllib pur, température 0, retries, monitoring)
 │   ├── extract.py           # extraction de combats depuis la PROSE des articles WBC/WBO
 │   ├── resolve.py           # recoupement d'entités (le même boxeur vu par plusieurs sources)
 │   ├── batch.py             # batch d'extraction : tous les articles d'une source → combats
 │   ├── resolve_batch.py     # batch de recoupement : paires suspectes d'un annuaire → fusions
+│   ├── integrate.py         # pont : combats LLM → format Fight du pipeline + fusion smart des shards
 │   ├── sources.py           # lecture des articles sources WBC (WP API) / WBO (RSS), politesse réseau
 │   └── __init__.py          # exports publics (LLMClient, LLMError, get_default_client…)
-├── tests/                   # 47 tests — stdlib unittest (aucune dépendance)
-│   ├── test_client.py       # 5   : clé, disponibilité, erreur propre sans clé
+├── tests/                   # 68 tests — stdlib unittest (aucune dépendance)
+│   ├── test_client.py       # 8   : clé, disponibilité, erreur propre sans clé, monitoring
 │   ├── test_extract.py      # 15  : prompt, validation, parsing JSON, extraction
 │   ├── test_resolve.py      # 11  : verdicts, décision, paires suspectes (0.80–0.95)
-│   ├── test_batch.py        # 10  : filtres de titres, run_batch, sources, tolérance aux pannes
-│   └── test_resolve_batch.py# 6   : contexte, fusions/distinctes/inconclusives, erreurs
+│   ├── test_batch.py        # 11  : filtres de titres, run_batch WBC/WBO, tolérance aux pannes
+│   ├── test_resolve_batch.py# 6   : contexte, fusions/distinctes/inconclusives, erreurs
+│   ├── test_integrate.py    # 8   : to_pipeline_fight, fights_to_pipeline_format (validations)
+│   └── test_merge.py        # 9   : fusion smart des shards (dédup date+paire normalisée)
 ├── README.md                # vue d'ensemble + usage
 └── .gitignore               # __pycache__/, *.pyc, .env
 ```
@@ -83,6 +86,10 @@ lui.
   Sans clé, `available == False`, le module est **inactif mais testable**.
 - **Température 0** (déterministe), `maxOutputTokens` 2000, timeout 60 s.
 - **Retries** : 429/503 → backoff **8, 16, 24 s** (4 tentatives max).
+- **Monitoring** (17/08/2026) : journalisation stdlib de chaque appel
+  (horodatage, modèle, statut ok/retry/erreur, latence — jamais la clé ni le
+  prompt) ; **alerte** après 3 échecs 429 consécutifs → « quota free tier
+  atteint » (warning `llm.client`).
 - **Réponse strictement JSON** : `complete_json`/`parse_llm_json` extraient le
   premier objet `{…}` (fences markdown, texte bavard, accolades dans les
   chaînes gérées) ; réponse non-JSON → `LLMError` propre, **jamais de
@@ -146,15 +153,13 @@ Dépôt : **`github.com/KarmaQuest/boxingdatasource-llm`**. Branches :
 
 | Branche | État |
 | --- | --- |
-| `main` | socle `9eebe18` + fusion PR #1 (`9bec2f1` : sous-étape 1 batch d'extraction) |
+| `main` | socle `9eebe18` + PR #1 (`9bec2f1` : batch extraction) + PR #2 (`52cee38` : batch résolution + **intégration**) + README (`95d6af8`) |
 | `etape/1-batch-extract` | fusionnée via PR #1 |
-| `etape/2-batch-resolve` | **branche courante** (sous-étape 2, `424e6a7`) — ⚠️ **divergée** de l'origin (3/1) à resynchroniser |
-| `etape/3-integration` | pont d'intégration (`llm/integrate.py` + `tests/test_integrate.py`) — **non fusionnée** |
+| `etape/2-batch-resolve` | fusionnée via PR #2 (resynchronisée par force-push `e585f59…4b73fc4`) |
+| `etape/3-integration` | ❌ supprimée (loc. + remote) — contenu porté dans PR #2, point de sauvegarde `archive/etape-3-integration` |
 
-⚠️ `main.py` référence la commande `integrate` (`from llm.integrate import
-fights_to_pipeline_format`) mais `llm/integrate.py` n'existe **pas** sur la
-branche courante → la commande casse tant que `etape/3-integration` n'est pas
-fusionnée (voir TASKS étape 4).
+✅ `python main.py integrate` fonctionne sur `main` (`llm/integrate.py` + 8
+tests présents).
 
 ## 10. Commandes utiles
 
@@ -165,10 +170,10 @@ python main.py extract --source wbc --date 2026-08-12 --text "..."   # prose →
 python main.py resolve --name-a "O. Usyk" --name-b "Oleksandr Usyk"  # même boxeur ? (LLM)
 python main.py batch --source wbc --year 2026 --output batch.json    # tous les articles → combats
 python main.py resolve-batch --annuaire merged.json --max-pairs 20   # paires suspectes → fusions
-python main.py integrate --input batch.json --source wbc --output out.json  # ⚠️ branche 3
+python main.py integrate --input batch.json --source wbc --output out.json  # batch LLM → format Fight
 python main.py report --annuaire ../boxing-app/public/data/boxers/merged.json  # paires suspectes (sans LLM)
 
-python -m unittest discover -s tests -v   # 47 tests
+python -m unittest discover -s tests -v   # 68 tests
 ```
 
 Sans `GEMINI_API_KEY`, les commandes LLM échouent proprement (message clair) ;
@@ -195,7 +200,12 @@ Sans `GEMINI_API_KEY`, les commandes LLM échouent proprement (message clair) ;
    fermées (fixture réelle testée).
 9. **Zone ambigüe 0.80–0.95** : au-delà, variantes d'accents (0.96+) résolues
    par le slug déterministe — le LLM ne tranche que le doute réel.
-10. **`integrate` cassée sur la branche courante** : `main.py` la référence
-    mais `llm/integrate.py` n'est que sur `etape/3-integration` (non fusionnée).
-11. **Sortie générée** : `boxing-app/public/data/` (fights/, boxers/, llm/) est
+10. **Dédup shard : id brut insuffisant** (17/08/2026, démontré) : le même
+    combat vu par spider et LLM a des ids SHA-256 différents (méthode PTS vs
+    UD, `weight_class`, nom tronqué « Moriana (Lauriaga ») → la fusion des
+    combats LLM dans un shard passe par la **clé date + paire de boxeurs
+    normalisée** (`merge_fights`, source déterministe prioritaire), pas l'id.
+11. **Monitoring** : journaliser chaque appel (jamais la clé ni le prompt) ;
+    alerter après 3 × 429 consécutifs (quota free tier atteint).
+12. **Sortie générée** : `boxing-app/public/data/` (fights/, boxers/, llm/) est
     un dossier GÉNÉRÉ — à régénérer au déploiement.

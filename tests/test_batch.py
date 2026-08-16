@@ -143,6 +143,19 @@ class TestRunBatch(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_batch(client, "wba")
 
+    def test_batch_wbo_avec_source_mockee(self):
+        client = FakeClient()
+        import llm.batch as batch_mod
+
+        batch_mod.fetch_wbo_articles = lambda max_items=30: [ARTICLE]
+        results = run_batch(client, "wbo", pause=0)
+        self.assertEqual(results["articles"], 1)
+        self.assertEqual(results["articles_ok"], 1)
+        self.assertEqual(results["total_fights"], 1)
+        self.assertEqual(results["combats"][0]["fights"][0]["winner"],
+                         "Ping Tai Ng")
+        self.assertEqual(results["errors"], [])
+
     def test_batch_sans_cle(self):
         with self.assertRaises(LLMError):
             run_batch(LLMClient(key=""), "wbc")
