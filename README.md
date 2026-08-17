@@ -15,6 +15,12 @@ elle apporte de la valeur :
    différentes (« O. Usyk », « Oleksandr Usyk », surnoms, Jr./Sr.). Le LLM
    tranche les cas ambigus que le déterministe (slug / similarité) ne
    résout pas.
+3. **Vérification de la programmation** (`llm/verify.py`) — les combats
+   à venir extraits des calendriers officiels (shards `fights-upcoming/`)
+   passent des règles déterministes (date future, horizon ≤ 18 mois, noms
+   valides, existence dans l'annuaire, doublon inter-orgs) puis un verdict
+   LLM sur les cas douteux → rapport `fights-upcoming-verification.json` ;
+   le front ne sert que les combats `confirmed`.
 
 ## Garde-fou absolu
 
@@ -57,6 +63,12 @@ python main.py resolve-batch --annuaire ../boxing-app/public/data/boxers/merged.
 # par write_org_shard)
 python main.py integrate --input batch-wbc.json --source wbc \
                          --output ../boxing-app/public/data/llm/fights-wbc.json
+
+# VÉRIFICATION : combats programmés (règles déterministes + verdict LLM
+# sur les cas douteux) → rapport confirmé/à-revoir
+python main.py verify --shards ../boxing-app/public/data/fights-upcoming \
+                      --annuaire ../boxing-app/public/data/boxers/merged.json \
+                      --output ../boxing-app/public/data/fights-upcoming-verification.json
 ```
 
 ## Tests

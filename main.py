@@ -191,6 +191,18 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_verify(args) -> int:
+    from llm.verify import main as verify_main
+
+    argv = ["--shards", args.shards, "--output", args.output,
+            "--max-llm", str(args.max_llm)]
+    if args.annuaire:
+        argv += ["--annuaire", args.annuaire]
+    if args.no_llm:
+        argv += ["--no-llm"]
+    return verify_main(argv)
+
+
 def main() -> int:
     _utf8()
     parser = argparse.ArgumentParser(prog="llm", description=__doc__)
@@ -237,6 +249,15 @@ def main() -> int:
     p.add_argument("--max-names", type=int, default=2000,
                    help="échantillon de noms comparés (O(n²), défaut 2000)")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("verify", help="vérifie les combats programmés (règles + LLM)")
+    p.add_argument("--shards", required=True, help="dossier fights-upcoming/")
+    p.add_argument("--annuaire", default="", help="boxers/merged.json (défaut : app)")
+    p.add_argument("--output", default="fights-upcoming-verification.json")
+    p.add_argument("--no-llm", action="store_true",
+                   help="règles déterministes seules (zéro appel LLM)")
+    p.add_argument("--max-llm", type=int, default=60)
+    p.set_defaults(func=cmd_verify)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):
