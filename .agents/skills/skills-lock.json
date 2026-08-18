@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "data-engineer": {
+      "source": "sickn33/agentic-awesome-skills",
+      "sourceType": "github",
+      "skillPath": "skills/data-engineer/SKILL.md",
+      "computedHash": "357baeca58e575cd1aba7f4a5c76ed1ab0f4adad9c05c34303f5f7dd91186ffe"
+    },
+    "gemini-free-tier-client": {
+      "source": "custom",
+      "sourceType": "custom",
+      "skillPath": "gemini-free-tier-client/SKILL.md",
+      "computedHash": ""
+    },
+    "pipeline-fight-contract": {
+      "source": "custom",
+      "sourceType": "custom",
+      "skillPath": "pipeline-fight-contract/SKILL.md",
+      "computedHash": ""
+    },
+    "stdlib-unittest": {
+      "source": "custom",
+      "sourceType": "custom",
+      "skillPath": "stdlib-unittest/SKILL.md",
+      "computedHash": ""
+    }
+  }
+}

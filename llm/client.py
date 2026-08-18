@@ -1,12 +1,17 @@
-"""Client LLM optionnel — Gemini free tier (aucune dépendance pip).
+"""Client LLM multi-provider avec fallback automatique.
 
 Le LLM est un OUTIL d'extraction, jamais une source de vérité : tout ce
 qu'il produit passe la validation stricte du schéma (`Fight.make`) avant
 d'exister. Sans clé, le module est simplement inactif (`is_available()
 == False`) et le pipeline reste 100 % déterministe.
 
-Choix : Gemini 2.5 Flash — free tier ~1 500 req/jour (le plus généreux),
-zéro coût, REST pur via urllib (pas de SDK à installer).
+Providers supportés (gratuits, sans CB) :
+- **Gemini** : free tier ~1 500 req/jour (le plus généreux)
+- **Groq** : free tier ~1 000 req/jour (ultra-rapide, LPU)
+- **Mistral** : free tier ~500K tokens/min (qualité)
+
+Fallback automatique : si un provider renvoie 429/404/erreur, le client
+essaie le provider suivant. Zéro intervention humaine requise.
 
 Garde-fous :
 - réponse tronquée / non-JSON → erreur propre, jamais de fabrication ;
@@ -16,9 +21,10 @@ Garde-fous :
 - la validation finale appartient au schéma (extract.py).
 
 Usage :
-    from llm.client import llm_client
-    if llm_client.is_available():
-        fights = extract_fights_llm(llm_client, text, date)
+    from llm.client import get_default_client
+    client = get_default_client()
+    if client.available:
+        fights = extract_fights_llm(client, text, date)
 """
 
 from __future__ import annotations
@@ -38,22 +44,10 @@ logger = logging.getLogger("llm.client")
 # Nombre d'échecs 429 CONSECUTIFS qui déclenche une alerte « quota atteint ».
 ALERT_429_THRESHOLD = 3
 
-# Clé partagée : $GEMINI_API_KEY > boxing-app/.env.local > .env pipeline
+# Clés partagées : $*_API_KEY > boxing-app/.env.local > .env pipeline
 ENV_CANDIDATES = (
     Path(__file__).resolve().parents[2] / "boxing-app" / ".env.local",
     Path(__file__).resolve().parents[1] / ".env",
-)
-
-# ⚠️ gemini-2.5-flash / 2.0-flash renvoient 404 pour les nouveaux comptes
-# (16/08/2026) : « no longer available to new users ».
-#
-# Modèle par défaut : gemini-flash-lite-latest — le SEUL qui répond sans
-# 429 sur ce compte free tier (gemini-flash-latest → 3.7-flash est saturé
-# « high demand » en permanence, 429 même après 90 s d'attente).
-GEMINI_MODEL = "gemini-flash-lite-latest"
-GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
 )
 
 
@@ -66,23 +60,29 @@ def _read_env_file(path: Path, key: str) -> str:
     return ""
 
 
-def api_key() -> str:
-    """Clé Gemini : $GEMINI_API_KEY > boxing-app/.env.local > .env pipeline."""
-    env = os.environ.get("GEMINI_API_KEY")
+def _resolve_api_key(env_var: str) -> str:
+    """Résout une clé API : env > .env.local > .env pipeline."""
+    env = os.environ.get(env_var)
     if env:
         return env
     for candidate in ENV_CANDIDATES:
-        value = _read_env_file(candidate, "GEMINI_API_KEY")
+        value = _read_env_file(candidate, env_var)
         if value:
             return value
     return ""
 
 
-class LLMClient:
-    """Client Gemini minimal (generateContent, température 0)."""
+# ---------------------------------------------------------------------------
+# Provider : classe de base
+# ---------------------------------------------------------------------------
 
-    def __init__(self, key: Optional[str] = None) -> None:
-        self._key = (key if key is not None else api_key()).strip()
+class _Provider:
+    """Un provider LLM (Gemini, Groq, Mistral…)."""
+
+    name: str = "unknown"
+
+    def __init__(self, key: str) -> None:
+        self._key = key.strip()
         self.timeout = 60.0
         self._consecutive_429 = 0
 
@@ -90,16 +90,45 @@ class LLMClient:
     def available(self) -> bool:
         return bool(self._key)
 
-    # ------------------------------------------------------------------
-    # Appel
-    # ------------------------------------------------------------------
     def complete(self, prompt: str, max_tokens: int = 2000) -> str:
-        """Réponse texte du LLM. Lève LLMError en cas d'échec.
+        """Appel LLM. Lève ProviderError en cas d'échec."""
+        raise NotImplementedError
 
-        Retries avec backoff sur 429/503 (pic de charge Gemini — message
-        officiel « high demand … try again later »)."""
+
+class ProviderError(Exception):
+    """Échec d'un provider spécifique (pas de clé, réseau, quota…)."""
+
+    def __init__(self, provider: str, message: str):
+        super().__init__(f"[{provider}] {message}")
+        self.provider = provider
+
+
+# ---------------------------------------------------------------------------
+# Gemini
+# ---------------------------------------------------------------------------
+
+class GeminiProvider(_Provider):
+    """Client Gemini free tier (generateContent, température 0)."""
+
+    name = "gemini"
+
+    # ⚠️ gemini-2.5-flash / 2.0-flash renvoient 404 pour les nouveaux comptes.
+    # Modèle par défaut : gemini-flash-lite-latest — le SEUL qui répondait
+    # sans 429 initialement. Depuis août 2026, gemini-3.7-flash et 3.6-flash
+    # sont aussi disponibles en free tier.
+    MODEL = "gemini-flash-lite-latest"
+    ENDPOINT = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL}:generateContent"
+    )
+
+    def __init__(self, key: Optional[str] = None) -> None:
+        resolved = key if key is not None else _resolve_api_key("GEMINI_API_KEY")
+        super().__init__(resolved)
+
+    def complete(self, prompt: str, max_tokens: int = 2000) -> str:
         if not self.available:
-            raise LLMError("pas de clé GEMINI_API_KEY — LLM inactif")
+            raise ProviderError(self.name, "pas de clé GEMINI_API_KEY")
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -108,11 +137,12 @@ class LLMClient:
                 "maxOutputTokens": max_tokens,
             },
         }
-        url = f"{GEMINI_ENDPOINT}?key={urllib.parse.quote(self._key)}"
+        url = f"{self.ENDPOINT}?key={urllib.parse.quote(self._key)}"
 
         import time as _time
         start = _time.time()
-        for attempt in range(1, 5):  # 4 tentatives max
+        data = None
+        for attempt in range(1, 5):
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
@@ -125,44 +155,223 @@ class LLMClient:
                 self._consecutive_429 = 0
                 logger.info(
                     "gemini ok : model=%s latency=%.2fs",
-                    GEMINI_MODEL, _time.time() - start,
+                    self.MODEL, _time.time() - start,
                 )
                 break
             except urllib.error.HTTPError as exc:
-                # 429 = rate-limit free tier (~15 req/min) → backoff long
                 if exc.code in (429, 503) and attempt < 4:
                     if exc.code == 429:
                         self._consecutive_429 += 1
                         if self._consecutive_429 >= ALERT_429_THRESHOLD:
                             logger.warning(
-                                "quota free tier atteint : %d x 429 consécutifs",
+                                "gemini quota atteint : %d x 429 consécutifs",
                                 self._consecutive_429,
                             )
                     logger.warning(
                         "gemini retry : attempt=%d status=%s backoff=%ds",
                         attempt, exc.code, 8.0 * attempt,
                     )
-                    _time.sleep(8.0 * attempt)  # backoff : 8, 16, 24 s
+                    _time.sleep(8.0 * attempt)
                     continue
-                # Échec terminal : on conserve un 429 (quota), on réinitialise
-                # sinon (erreur sans lien avec le quota).
                 if exc.code == 429:
                     self._consecutive_429 += 1
                 else:
                     self._consecutive_429 = 0
-                logger.error("gemini error : status=%s", exc.code)
-                raise LLMError(f"appel Gemini échoué : {exc}") from exc
+                raise ProviderError(self.name, f"HTTP {exc.code}") from exc
             except (OSError, TimeoutError) as exc:
-                logger.error("gemini error : %s", type(exc).__name__)
-                raise LLMError(f"appel Gemini échoué : {exc}") from exc
+                raise ProviderError(self.name, str(exc)) from exc
+
+        if data is None:
+            raise ProviderError(self.name, "échec après 4 tentatives")
 
         try:
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return data["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(
-                f"réponse Gemini inattendue : {json.dumps(data)[:300]}"
+            raise ProviderError(
+                self.name, f"réponse inattendue : {json.dumps(data)[:300]}"
             ) from exc
-        return text
+
+
+# ---------------------------------------------------------------------------
+# Groq (API compatible OpenAI)
+# ---------------------------------------------------------------------------
+
+class GroqProvider(_Provider):
+    """Client Groq free tier (API OpenAI-compatible, ultra-rapide LPU)."""
+
+    name = "groq"
+    MODEL = "llama-3.3-70b-versatile"
+    ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, key: Optional[str] = None) -> None:
+        resolved = key if key is not None else _resolve_api_key("GROQ_API_KEY")
+        super().__init__(resolved)
+
+    def complete(self, prompt: str, max_tokens: int = 2000) -> str:
+        if not self.available:
+            raise ProviderError(self.name, "pas de clé GROQ_API_KEY")
+
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+
+        import time as _time
+        start = _time.time()
+        for attempt in range(1, 4):
+            req = urllib.request.Request(
+                self.ENDPOINT,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._key}",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                self._consecutive_429 = 0
+                logger.info(
+                    "groq ok : model=%s latency=%.2fs",
+                    self.MODEL, _time.time() - start,
+                )
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as exc:
+                if exc.code in (429, 503) and attempt < 3:
+                    if exc.code == 429:
+                        self._consecutive_429 += 1
+                    _time.sleep(2.0 * attempt)
+                    continue
+                raise ProviderError(self.name, f"HTTP {exc.code}") from exc
+            except (OSError, TimeoutError) as exc:
+                raise ProviderError(self.name, str(exc)) from exc
+
+        raise ProviderError(self.name, "échec après 3 tentatives")
+
+
+# ---------------------------------------------------------------------------
+# Mistral (API compatible OpenAI)
+# ---------------------------------------------------------------------------
+
+class MistralProvider(_Provider):
+    """Client Mistral free tier (API OpenAI-compatible, ~1B tokens/mois)."""
+
+    name = "mistral"
+    MODEL = "mistral-small-latest"
+    ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
+
+    def __init__(self, key: Optional[str] = None) -> None:
+        resolved = key if key is not None else _resolve_api_key("MISTRAL_API_KEY")
+        super().__init__(resolved)
+
+    def complete(self, prompt: str, max_tokens: int = 2000) -> str:
+        if not self.available:
+            raise ProviderError(self.name, "pas de clé MISTRAL_API_KEY")
+
+        payload = {
+            "model": self.MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+
+        import time as _time
+        start = _time.time()
+        for attempt in range(1, 4):
+            req = urllib.request.Request(
+                self.ENDPOINT,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._key}",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                self._consecutive_429 = 0
+                logger.info(
+                    "mistral ok : model=%s latency=%.2fs",
+                    self.MODEL, _time.time() - start,
+                )
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as exc:
+                if exc.code in (429, 503) and attempt < 3:
+                    if exc.code == 429:
+                        self._consecutive_429 += 1
+                    _time.sleep(2.0 * attempt)
+                    continue
+                raise ProviderError(self.name, f"HTTP {exc.code}") from exc
+            except (OSError, TimeoutError) as exc:
+                raise ProviderError(self.name, str(exc)) from exc
+
+        raise ProviderError(self.name, "échec après 3 tentatives")
+
+
+# ---------------------------------------------------------------------------
+# Client multi-provider avec fallback
+# ---------------------------------------------------------------------------
+
+class LLMClient:
+    """Client LLM avec fallback automatique entre providers.
+
+    Essaie les providers dans l'ordre : Gemini → Groq → Mistral.
+    Si un provider échoue (429, 404, réseau), le suivant est essayé.
+
+    Rétrocompatible : `LLMClient(key="cle")` crée un client avec
+    uniquement Gemini (comportement ancien).
+    """
+
+    def __init__(self, providers: Optional[list[_Provider]] = None,
+                 key: Optional[str] = None) -> None:
+        if providers is not None:
+            self._providers = providers
+        elif key is not None:
+            # Rétrocompatibilité : un seul provider Gemini avec clé fixe
+            self._providers = [GeminiProvider(key=key)]
+        else:
+            self._providers = [
+                GeminiProvider(),
+                GroqProvider(),
+                MistralProvider(),
+            ]
+        self._active_provider: _Provider | None = None
+
+    @property
+    def available(self) -> bool:
+        return any(p.available for p in self._providers)
+
+    @property
+    def provider_name(self) -> str:
+        return self._active_provider.name if self._active_provider else "none"
+
+    def complete(self, prompt: str, max_tokens: int = 2000) -> str:
+        """Appel LLM avec fallback automatique entre providers."""
+        errors: list[str] = []
+        for provider in self._providers:
+            if not provider.available:
+                continue
+            try:
+                result = provider.complete(prompt, max_tokens)
+                self._active_provider = provider
+                return result
+            except ProviderError as exc:
+                errors.append(str(exc))
+                logger.warning(
+                    "provider %s échoué : %s — essai du suivant",
+                    provider.name, exc,
+                )
+                continue
+
+        if not errors:
+            raise LLMError("aucun provider disponible (pas de clé API)")
+        raise LLMError(
+            f"tous les providers ont échoué : {'; '.join(errors)}"
+        )
 
     def complete_json(self, prompt: str, max_tokens: int = 2000) -> dict:
         """Réponse JSON STRICT : extrait le premier objet {…} de la réponse."""
@@ -183,8 +392,12 @@ class LLMError(Exception):
     """Échec du LLM (pas de clé, réseau, JSON invalide…)."""
 
 
+# ---------------------------------------------------------------------------
+# API publique
+# ---------------------------------------------------------------------------
+
 def llm_client() -> LLMClient:
-    """Client partagé — `available` False sans clé."""
+    """Client partagé — `available` False sans aucune clé."""
     return LLMClient()
 
 

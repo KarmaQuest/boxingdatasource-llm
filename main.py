@@ -191,6 +191,21 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_status(args) -> int:
+    """Rapport de synthèse : sorties générées + vérification + config — zéro
+    appel LLM. `--json` pour un objet stable consommé par boxing-ops."""
+    import json as _json
+
+    from status import collect_status, render_human
+
+    status = collect_status()
+    if args.json:
+        print(_json.dumps(status, ensure_ascii=False, indent=2))
+    else:
+        print(render_human(status))
+    return 0
+
+
 def cmd_verify(args) -> int:
     from llm.verify import main as verify_main
 
@@ -258,6 +273,11 @@ def main() -> int:
                    help="règles déterministes seules (zéro appel LLM)")
     p.add_argument("--max-llm", type=int, default=60)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("status", help="rapport de synthèse (sorties, vérification, config)")
+    p.add_argument("--json", action="store_true",
+                   help="sortie JSON stable (consommé par boxing-ops)")
+    p.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

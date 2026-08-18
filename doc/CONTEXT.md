@@ -49,17 +49,15 @@ statiques (zéro requête runtime).
 ```
 boxingdatasource-llm/
 ├── main.py                  # CLI : extract / resolve / batch / resolve-batch / integrate / report
-├── llm/
-│   ├── client.py            # client Gemini free tier (REST urllib pur, température 0, retries, monitoring)
+├── llm/│   ├── client.py            # client multi-provider (Gemini + Groq + Mistral, fallback auto, REST urllib pur)
 │   ├── extract.py           # extraction de combats depuis la PROSE des articles WBC/WBO
 │   ├── resolve.py           # recoupement d'entités (le même boxeur vu par plusieurs sources)
 │   ├── batch.py             # batch d'extraction : tous les articles d'une source → combats
 │   ├── resolve_batch.py     # batch de recoupement : paires suspectes d'un annuaire → fusions
 │   ├── integrate.py         # pont : combats LLM → format Fight du pipeline + fusion smart des shards
 │   ├── sources.py           # lecture des articles sources WBC (WP API) / WBO (RSS), politesse réseau
-│   └── __init__.py          # exports publics (LLMClient, LLMError, get_default_client…)
-├── tests/                   # 68 tests — stdlib unittest (aucune dépendance)
-│   ├── test_client.py       # 8   : clé, disponibilité, erreur propre sans clé, monitoring
+│   └── __init__.py          # exports publics (LLMClient, LLMError, get_default_client…)├── tests/                   # 97 tests — stdlib unittest (aucune dépendance)
+│   ├── test_client.py       # 23  : providers individuels, fallback, multi-provider, monitoring
 │   ├── test_extract.py      # 15  : prompt, validation, parsing JSON, extraction
 │   ├── test_resolve.py      # 11  : verdicts, décision, paires suspectes (0.80–0.95)
 │   ├── test_batch.py        # 11  : filtres de titres, run_batch WBC/WBO, tolérance aux pannes
@@ -74,26 +72,35 @@ Le module est **stdlib pur** (urllib, re, json, difflib) — **aucune dépendanc
 pip** ; il fonctionne sans clé (mocking des tests) et le pipeline tourne sans
 lui.
 
-## 4. Client LLM & modèle
+## 4. Client LLM multi-provider (18/08/2026)
 
-`llm/client.py` — `LLMClient` (Gemini `generateContent`, REST via urllib) :
+`llm/client.py` — `LLMClient` avec **fallback automatique** entre providers
+gratuits (REST urllib pur, aucune dépendance pip) :
 
-- **Modèle** : `gemini-flash-lite-latest` — le SEUL qui répond sans 429 sur ce
-  compte free tier. ⚠️ `gemini-2.5-flash` / `2.0-flash` renvoient **404** pour
-  les nouveaux comptes (16/08/2026 : « no longer available to new users ») ;
-  `gemini-flash-latest` (3.7-flash) est saturé « high demand » → 429 permanent.
-- **Clé** : `$GEMINI_API_KEY` > `boxing-app/.env.local` > `.env` pipeline.
-  Sans clé, `available == False`, le module est **inactif mais testable**.
-- **Température 0** (déterministe), `maxOutputTokens` 2000, timeout 60 s.
-- **Retries** : 429/503 → backoff **8, 16, 24 s** (4 tentatives max).
-- **Monitoring** (17/08/2026) : journalisation stdlib de chaque appel
-  (horodatage, modèle, statut ok/retry/erreur, latence — jamais la clé ni le
-  prompt) ; **alerte** après 3 échecs 429 consécutifs → « quota free tier
-  atteint » (warning `llm.client`).
-- **Réponse strictement JSON** : `complete_json`/`parse_llm_json` extraient le
-  premier objet `{…}` (fences markdown, texte bavard, accolades dans les
-  chaînes gérées) ; réponse non-JSON → `LLMError` propre, **jamais de
-  fabrication**.
+| Provider | Clé env | Modèle | RPM gratuit | RPD gratuit |
+| --- | --- | --- | --- | --- |
+| **Gemini** | `GEMINI_API_KEY` | `gemini-flash-lite-latest` | 15 | 1 500 |
+| **Groq** | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | 30 | 1 000 |
+| **Mistral** | `MISTRAL_API_KEY` | `mistral-small-latest` | ~60 | ~500K tokens |
+
+**Fallback** : Gemini → Groq → Mistral. Si un provider renvoie 429/404/erreur,
+le client essaie le suivant automatiquement. Zéro intervention humaine.
+
+**Clés** : `$*_API_KEY` > `boxing-app/.env.local` > `.env` pipeline.
+Sans clé pour un provider, il est simplement ignoré. Sans aucune clé,
+`available == False`, le module est **inactif mais testable**.
+
+**Paramètres communs** : température 0 (déterministe), timeout 60 s,
+retries 429/503 avec backoff.
+
+**Monitoring** : journalisation stdlib de chaque appel (horodatage, provider,
+statut ok/retry/erreur, latence — jamais la clé ni le prompt) ; **alerte
+locale** après 3 échecs 429 consécutifs (par provider).
+
+**Réponse strictement JSON** : `complete_json`/`parse_llm_json` extraient le
+premier objet `{…}` (fences markdown, texte bavard, accolades dans les
+chaînes gérées) ; réponse non-JSON → `LLMError` propre, **jamais de
+fabrication**.
 
 ## 5. Extraction prose (articles WBC/WBO)
 
@@ -147,6 +154,17 @@ n'arrête pas le lot.
 - Le LLM ne produit **jamais** de combat non validé : un échec (pas de clé,
   JSON invalide, schéma) est rejeté avec warning, jamais écrit.
 
+## 8b. Skills activés (18/08/2026)
+
+| Skill | Rôle | Source |
+| --- | --- | --- |
+| `gemini-free-tier-client` | Conventions du client Gemini (modèle lite, retries, pauses rate-limit, monitoring) | custom |
+| `pipeline-fight-contract` | Contrat `Fight` du pipeline + clé de fusion date+paire (garde-fous) | custom |
+| `stdlib-unittest` | Conventions de tests stdlib sans dépendance (FakeClient, fixtures) | custom |
+| `data-engineer` | Architecture données (copié du pipeline) | sickn33/agentic-awesome-skills |
+
+Installés dans `boxingdatasource-llm/.agents/skills/` + `skills-lock.json`.
+
 ## 9. Git & branches
 
 Dépôt : **`github.com/KarmaQuest/boxingdatasource-llm`**. Branches :
@@ -172,12 +190,19 @@ python main.py batch --source wbc --year 2026 --output batch.json    # tous les 
 python main.py resolve-batch --annuaire merged.json --max-pairs 20   # paires suspectes → fusions
 python main.py integrate --input batch.json --source wbc --output out.json  # batch LLM → format Fight
 python main.py report --annuaire ../boxing-app/public/data/boxers/merged.json  # paires suspectes (sans LLM)
+python main.py status [--json]        # état local (fichiers llm/, vérification, modèle)
 
-python -m unittest discover -s tests -v   # 68 tests
+python -m unittest discover -s tests -v   # 82 tests
 ```
 
 Sans `GEMINI_API_KEY`, les commandes LLM échouent proprement (message clair) ;
 `report` fonctionne sans LLM (il liste les paires à trancher).
+
+La console web **boxing-ops** (à la racine du workspace) pilote le module :
+`batch` (WBC/WBO), `integrate` (→ format Fight), `verify` (combats à venir),
+`resolve-batch`, `status --json`. La fusion des combats LLM dans les shards
+du pipeline se fait via `python main.py import-llm` côté pipeline (le module
+LLM reste découplé).
 
 ## 11. Décisions & pièges
 
