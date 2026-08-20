@@ -11,6 +11,9 @@
         Extrait les combats de TOUS les articles d'une source (LLM).
     python main.py resolve-batch --annuaire merged.json --max-pairs 20
         Tranche les paires suspectes d'un annuaire (LLM).
+    python main.py verify-profiles --annuaire …/merged.json --output report.json
+        Vérifie les profils boxeurs contre Wikipedia (LLM, rapport) — puis
+        applique avec : pipeline apply-profiles --report report.json.
 
 Sans GEMINI_API_KEY, les commandes LLM échouent proprement (message clair) ;
 `report` fonctionne sans LLM (il liste les paires suspectes à trancher).
@@ -191,6 +194,46 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_verify_profiles(args) -> int:
+    from llm.client import get_default_client
+    from llm.profiles import (
+        apply_report,
+        load_candidates,
+        save_report,
+        verify_profiles,
+    )
+
+    client = get_default_client()
+    if not client.available:
+        print("❌ GEMINI_API_KEY absente — le LLM est inactif.")
+        return 1
+
+    candidates = load_candidates(args.annuaire, limit=args.limit)
+    print(f"{len(candidates)} profils à vérifier (merged.json, Wikidata + "
+          f"physique incomplète)…")
+
+    def progress(i, total, name):
+        print(f"   [{i}/{total}] {name}")
+
+    report = verify_profiles(client, candidates, progress=progress)
+    save_report(report, args.output)
+
+    corrections = apply_report(report, threshold=args.threshold)
+    print(f"\n✅ {len(report['profiles'])} profils vérifiés — "
+          f"{len(corrections)} à corriger (confiance ≥ {args.threshold:.1f}) :")
+    for c in corrections:
+        for field, value in c["corrections"].items():
+            print(f"   {c['name']} → {field} = {value}")
+    if report["errors"]:
+        print(f"\n⚠️ {len(report['errors'])} échecs :")
+        for e in report["errors"][:5]:
+            print(f"   {e[:110]}")
+    print(f"\n✍️  {args.output}")
+    print("Applique : pipeline apply-profiles --report "
+          f"{args.output} --annuaire {args.annuaire}")
+    return 0
+
+
 def cmd_status(args) -> int:
     """Rapport de synthèse : sorties générées + vérification + config — zéro
     appel LLM. `--json` pour un objet stable consommé par boxing-ops."""
@@ -273,6 +316,17 @@ def main() -> int:
                    help="règles déterministes seules (zéro appel LLM)")
     p.add_argument("--max-llm", type=int, default=60)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("verify-profiles",
+                       help="vérifie les profils boxeurs (Wikipedia → LLM, rapport)")
+    p.add_argument("--annuaire", required=True, help="boxers/merged.json")
+    p.add_argument("--output", default="profiles-verification.json",
+                   help="chemin JSON du rapport")
+    p.add_argument("--limit", type=int, default=0,
+                   help="max de profils analysés (0 = tous les candidats)")
+    p.add_argument("--threshold", type=float, default=0.9,
+                   help="seuil d'application affiché (défaut 0.9)")
+    p.set_defaults(func=cmd_verify_profiles)
 
     p = sub.add_parser("status", help="rapport de synthèse (sorties, vérification, config)")
     p.add_argument("--json", action="store_true",
