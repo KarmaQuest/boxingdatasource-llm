@@ -48,12 +48,21 @@ _SKIP_TITLE_RE = re.compile(
     r"opens |on this day|one year since|remember|nostalgia|legend|career|path to|biograph|"
     r"feature|interview|how to|join |congratulat|ratings|ranking|directives|guidelines|"
     r"hydration|protocol|mourns|passing|receives|receiving|belt from|book |magazine|issue|"
-    r"winners of|best of|wbc convention|meeting|seminar|conference",
+    r"winners of|best of|wbc convention|meeting|seminar|conference|"
+    r"resolution|negotiat|purse bid|mandatory|medical status|committee|"
+    r"order|notice|certification|vacant|show cause|anti-doping|"
+    r"female ranking|male ranking|explanations|rating|"
+    r"defends on|set to|scheduled|upcoming|will face|"
+    r"live on|\blive\b|defends? crown|defends? belt|defends? strap|"
+    r"to defend|\bdefend\b|will defend|re: ",
     re.IGNORECASE,
 )
 _RESULT_TITLE_RE = re.compile(
     r"results|defeated|crowned|reigns|wins |claim|victory|knockout|\btko\b|stopped|"
-    r"outpointed|historic night|absolute war|great .* bouts|concludes",
+    r"outpointed|historic night|absolute war|great .* bouts|concludes|"
+    r"\bdefeats?\b|\bdefends?\b|\bbeats?\b|\bcrushes?\b|\bretains?\b|\bretained\b|"
+    r"\bupset\b|\bedges?\b|\bnew .* champion\b|\btitle defense\b|"
+    r"\bundisputed\b|\bchampion\b|\bcapture\b|\bwins by\b|\bwin\b",
     re.IGNORECASE,
 )
 

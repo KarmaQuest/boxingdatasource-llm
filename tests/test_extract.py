@@ -9,8 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from llm.client import LLMClient, LLMError  # noqa: E402
 from llm.extract import (  # noqa: E402
     _first_json_object,
+    _name_in_text,
+    _surname,
     build_prompt,
     extract_fights_llm,
+    filter_plausible,
     parse_llm_json,
     _validate_fight,
 )
@@ -134,8 +137,12 @@ class TestExtractFightsLlm(unittest.TestCase):
     def test_extraction_valide(self):
         client = FakeClient()
         fights = extract_fights_llm(client, PROSE, "2026-08-12", "wbc")
-        self.assertEqual(len(fights), 2)
+        # « Ping Tai Ng » est cité dans l'article → gardé.
+        # « Retio Tsutsumi » n'apparaît PAS dans le texte → hallucination
+        # probable → écarté par le garde-fou.
+        self.assertEqual(len(fights), 1)
         self.assertEqual(fights[0]["method"], "TKO")
+        self.assertEqual(fights[0]["winner"], "Ping Tai Ng")
         # la date de publication est passée dans le prompt
         self.assertIn("2026-08-12", client.last_prompt)
 
@@ -143,6 +150,39 @@ class TestExtractFightsLlm(unittest.TestCase):
         client = LLMClient(key="")  # available = False
         with self.assertRaises(LLMError):
             extract_fights_llm(client, PROSE, "2026-08-12")
+
+
+class TestGardeFouAntiHallucination(unittest.TestCase):
+    def test_vainqueur_absent_du_texte_ecarte(self):
+        fights = [_validate_fight({
+            "winner": "Terence Crawford", "loser": "Saul Canelo Alvarez",
+            "method": "UD", "rounds": 12,
+        })]
+        kept, dropped = filter_plausible(fights, "Un article sans rapport.")
+        self.assertEqual(kept, [])
+        self.assertEqual(len(dropped), 1)
+
+    def test_vainqueur_cite_par_nom_de_famille_garde(self):
+        text = "Espinoza retained his title against Khegai."
+        fights = [_validate_fight({
+            "winner": "Rafael Espinoza", "loser": "Arnold Khegai",
+            "method": "TKO", "rounds": 11,
+        })]
+        kept, dropped = filter_plausible(fights, text)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+
+    def test_nom_complet_cite_garde(self):
+        self.assertTrue(_name_in_text("Ping Tai Ng",
+                                      "BANGKOK - Ping Tai Ng stopped Seesa."))
+        self.assertFalse(_name_in_text("Retio Tsutsumi",
+                                       "BANGKOK - the Japanese won by UD."))
+
+    def test_accents_et_casse_ignores(self):
+        self.assertTrue(_name_in_text("Café Axé", "Un texte sur cafe axe."))
+
+    def test_surname_retourne_dernier_mot(self):
+        self.assertEqual(_surname("Rafael Espinoza"), "espinoza")
 
 
 if __name__ == "__main__":

@@ -25,19 +25,20 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Optional
 
 from llm.client import LLMClient, LLMError
 
 # Méthodes autorisées — même énumération que config.schema (pipeline).
-_METHODS = ("UD", "SD", "MD", "TKO", "KO", "DQ", "PTS")
+_METHODS = ("UD", "SD", "MD", "TKO", "KO", "DQ", "PTS", "TD")
 
 _PROMPT = """Tu es un extracteur de résultats de boxe. À partir de l'article de presse ci-dessous, extrais TOUS les combats dont le vainqueur est clairement identifiable, y compris les phrases à sujet pronominal (« the Japanese who won by unanimous decision » = il faut retrouver le nom du boxeur dans l'article).
 
 RÈGLES STRICTES :
 1. Ne JAMAIS inventer : si un nom, une méthode ou un round n'est pas dans le texte, mets une chaîne vide ou 0.
 2. Le perdant peut être désigné par sa nationalité (« the Thai challenger ») : si l'article ne donne pas son nom complet, mets le nom partiel tel quel (ex. « Thai challenger »).
-3. Méthodes autorisées uniquement : UD, SD, MD, TKO, KO, DQ, PTS.
+3. Méthodes autorisées uniquement : UD, SD, MD, TKO, KO, DQ, PTS, TD.
 4. `rounds` = rounds prévus (ex. « 10 rounds ») ou round de l'arrêt (ex. « fifth round » = 5), sinon 0.
 5. `is_title_fight` = true si « title », « championship », « belt », « crown », « champion » apparaît.
 6. `location` : ville/pays du chapeau de l'article (ex. « BANGKOK, THAILAND »), sinon "".
@@ -150,6 +151,54 @@ def parse_llm_json(text: str) -> list[dict]:
     return [_validate_fight(f) for f in fights if isinstance(f, dict)]
 
 
+def _norm_text(s: str) -> str:
+    """Normalise pour la recherche de nom : minuscules, accents retirés."""
+    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9 ]+", " ", s.lower())
+
+
+def _surname(name: str) -> str:
+    """Nom de famille = dernier mot significatif du nom normalisé."""
+    toks = [t for t in _norm_text(name).split() if len(t) >= 3]
+    return toks[-1] if toks else ""
+
+
+def _name_in_text(name: str, text: str) -> bool:
+    """Le nom (ou son nom de famille) apparaît-il dans le texte de l'article ?
+
+    Garde-fou anti-hallucination : un vainqueur n'apparaissant JAMAIS dans
+    l'article est très probablement inventé par le LLM (ex. « Terence
+    Crawford » dans un article sur une autre affiche).
+    """
+    n = _norm_text(name)
+    if not n:
+        return True  # nom inconnu → laisse passer (jugé par le schéma)
+    nt = _norm_text(text)
+    if n in nt:
+        return True
+    sur = _surname(name)
+    if len(sur) >= 3 and sur in nt:
+        return True
+    return False
+
+
+def filter_plausible(fights: list[dict], text: str) -> tuple[list[dict], list[dict]]:
+    """Garde les combats dont le vainqueur est cité dans l'article.
+
+    Retourne `(gardés, écartés)` — les combats écartés sont des
+    hallucinations probables, jamais écrits.
+    """
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for f in fights:
+        if f is not None and _name_in_text(f.get("winner", ""), text):
+            kept.append(f)
+        else:
+            dropped.append(f)
+    return kept, dropped
+
+
 def extract_fights_llm(
     client: LLMClient,
     text: str,
@@ -166,4 +215,7 @@ def extract_fights_llm(
         raise LLMError("pas de clé GEMINI_API_KEY — LLM inactif")
     response = client.complete(build_prompt(text, date, source))
     fights = parse_llm_json(response)
-    return [f for f in fights if f is not None]
+    kept, dropped = filter_plausible(fights, text)
+    # Les combats écartés (vainqueur absent de l'article) sont des
+    # hallucinations probables — on ne les écrit jamais.
+    return kept

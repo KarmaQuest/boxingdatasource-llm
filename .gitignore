@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .env
+# sorties de batch/extraction — régénérables, jamais commitées
+batch-*.json
+fights-*.json

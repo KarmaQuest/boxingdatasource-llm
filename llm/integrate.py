@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-METHODS = ("UD", "SD", "MD", "TKO", "KO", "DQ", "PTS")
+METHODS = ("UD", "SD", "MD", "TKO", "KO", "DQ", "PTS", "TD")
 WINNER_DRAW = "Draw"
 WINNER_NC = "NC"
 

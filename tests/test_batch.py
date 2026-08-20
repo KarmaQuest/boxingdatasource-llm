@@ -15,6 +15,7 @@ from llm.batch import (  # noqa: E402
 from llm.client import LLMClient, LLMError  # noqa: E402
 from llm.sources import (  # noqa: E402
     _RSS_ITEM_RE,
+    _decode_body,
     _strip_html,
     fetch_wbc_articles,
     fetch_wbo_articles,
@@ -72,6 +73,19 @@ class TestStripHtml(unittest.TestCase):
         )
 
 
+class TestDecodeBody(unittest.TestCase):
+    def test_utf8_valide(self):
+        self.assertEqual(_decode_body("Rafael Espinoza".encode("utf-8")),
+                         "Rafael Espinoza")
+
+    def test_guillemets_windows1252_plus_de_mojibake(self):
+        # « „El Divino“ » encodé en Windows-1252 (0x84 … 0x94) : UTF-8 strict
+        # échoue → fallback Windows-1252 → guillemets corrects, pas de « �? ».
+        raw = "Rafael „El Divino“ Espinoza".encode("windows-1252")
+        self.assertEqual(_decode_body(raw), "Rafael „El Divino“ Espinoza")
+        self.assertNotIn("\ufffd", _decode_body(raw))
+
+
 class TestSourcesParsing(unittest.TestCase):
     def test_rss_items_extraits(self):
         feed = (
@@ -102,11 +116,16 @@ class TestIsResultArticle(unittest.TestCase):
             "Veyre Very Ready to Defend Her Title Against Ferreira",
             "Camila Zamorano to Defend Her WBC World Championship",
             "Behind The Brilliance: The Untold Story",
-            "WBC Issues Essential Athlete Hydration Guidelines",
-            "On This Day in Boxing... August 14",
-            "Isaac Cruz Brings Hope and Solidarity to Children",
-        ):
-            self.assertFalse(_is_result_article(title), title)
+"WBC Issues Essential Athlete Hydration Guidelines",
+              "On This Day in Boxing... August 14",
+              "Isaac Cruz Brings Hope and Solidarity to Children",
+              # promos d'affiches à venir, pas des résultats
+              "Brian Norman Jr. Defends Crown June 19 Against Jin Sasaki LIVE on ESPN+",
+              "Re: WBO Female Middleweight Champion, Claressa Shields",
+              "Taylor vs Serrano 3 LIVE on Netflix Friday, July 11",
+              "Canelo Will Face Crawford in September",
+          ):
+              self.assertFalse(_is_result_article(title), title)
 
 
 class TestRunBatch(unittest.TestCase):
